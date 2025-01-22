@@ -40,7 +40,8 @@ local Window = Fluent:CreateWindow({
 
 -- Tabs
 local Tabs = {
-    Machines = Window:AddTab({ Title = "Machines", Icon = "star" })
+    Machines = Window:AddTab({ Title = "Machines", Icon = "star" }),
+    Main = Window:AddTab({ Title = "Ninja Event", Icon = "sword" }),
 }
 
 local GoliathSection = Tabs.Machines:AddSection("Goliath")
@@ -755,7 +756,7 @@ end)
 fetchOwnedPets()
 
 
-local NinjaSection = Tabs.Machines:AddSection("Ninja Event")
+local PlaytimeSection = Tabs.Main:AddSection("Playtime Pass")
 
 
 local AutoPlaytimeToggle = PlaytimeSection:AddToggle("AutoPlaytime", {
