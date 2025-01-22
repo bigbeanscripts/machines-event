@@ -1,0 +1,1430 @@
+-- Machines
+
+-- Load Fluent UI libraries
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+-- Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+-- Configuration
+local CONFIG = {
+    SLOT_WAIT_TIME = 910,  -- Wait time per slot
+    DROPDOWN_REFRESH_INTERVAL = 5,  -- Dropdown refresh interval
+    PET_REFRESH_INTERVAL = 30,  -- Interval to refresh huge/unlocked pets
+}
+
+-- Create window
+local Window = Fluent:CreateWindow({
+    Title = "Bean Hub",
+    SubTitle = "By Big Bean",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl,
+    OnDestroy = function()
+        if MinimizeGui then
+            local fadeOut = TweenService:Create(MinimizeGui, TweenInfo.new(0.5), {
+                Transparency = 1
+            })
+            fadeOut:Play()
+            fadeOut.Completed:Connect(function()
+                MinimizeGui:Destroy()
+            end)
+        end
+    end
+})
+
+-- Tabs
+local Tabs = {
+    Machines = Window:AddTab({ Title = "Machines", Icon = "star" })
+}
+
+local GoliathSection = Tabs.Machines:AddSection("Goliath")
+
+-- Services and Remote Function
+local PetServiceRF = ReplicatedStorage.Packages.Knit.Services.PetService.RF:FindFirstChild("getOwned")
+local PetGoliathService = ReplicatedStorage.Packages.Knit.Services.PetGoliathService.RE
+
+-- Pet Data Management
+local ownedPetData = {} -- Maps pet names to their IDs
+local petNames = {}
+local selectedPetName = nil  -- Track selected pet globally
+local isAutoGoliathRunning = false  -- Flag to control the automation loop
+
+-- Fetch Pet Data
+local function fetchPetData()
+    -- Reset existing data
+    ownedPetData = {}
+    petNames = {}
+
+    if not PetServiceRF or not PetServiceRF:IsA("RemoteFunction") then
+        warn("RemoteFunction 'getOwned' is invalid or unavailable.")
+        return false
+    end
+
+    local success, petData = pcall(function()
+        return PetServiceRF:InvokeServer()
+    end)
+
+    if not success or not petData then
+        warn("Failed to fetch pets or no pets found.")
+        return false
+    end
+
+    for petId, petInfo in pairs(petData) do
+        -- Process only Huge and unlocked pets
+        if petInfo.CraftType == "Huge" and petInfo.Locked == false then
+            local displayName = petInfo.DisplayName
+            if not ownedPetData[displayName] then
+                ownedPetData[displayName] = {}
+            end
+            table.insert(ownedPetData[displayName], petId)
+
+            if not table.find(petNames, displayName) then
+                table.insert(petNames, displayName)
+            end
+        end
+    end
+
+    return true
+end
+
+-- Pet Dropdown
+local PetDropdown = Tabs.Machines:AddDropdown("SelectPet", {
+    Title = "Select Your Pet",
+    Description = "Choose the name of the pets you want to goliath (The pet will only appear if its a huge and is unlocked).",
+    Values = petNames,
+    Multi = false,
+})
+
+-- Refresh Dropdown Periodically
+local function startDropdownRefresh()
+    spawn(function()
+        while true do
+            fetchPetData()
+            PetDropdown:SetValues(petNames)
+            wait(CONFIG.DROPDOWN_REFRESH_INTERVAL)
+        end
+    end)
+end
+
+-- Periodically Update Huge/Unlocked Pet IDs
+local function periodicPetDataRefresh()
+    spawn(function()
+        while true do
+            fetchPetData()
+            wait(CONFIG.PET_REFRESH_INTERVAL)
+        end
+    end)
+end
+
+-- Dropdown Selection Handler
+PetDropdown:OnChanged(function(selectedPet)
+    selectedPetName = selectedPet  -- Store selected pet globally
+    print("Selected Pet:", selectedPet)
+    local ids = ownedPetData[selectedPet] or {}
+    
+    if #ids > 0 then
+        print("IDs Found:")
+        for _, id in ipairs(ids) do
+            print(" -", id)
+        end
+    else
+        print("No IDs found or the pet is invalid.")
+    end
+end)
+
+-- Add paragraph for user instructions
+Tabs.Machines:AddParagraph({
+    Title = "Pet Info",
+    Content = [[When selecting a pet, check the console to verify if the pet IDs are displayed correctly.  
+If the IDs aren't showing, select a different pet and then switch back to refresh the IDs.
+
+Note: This Goliath automation only works for unlocked pets.  
+If you want specific huge pets to stay huge, make sure to lock them.]]
+})
+
+-- Auto Goliath Toggle
+local AutoGoliathToggle = Tabs.Machines:AddToggle("Auto Goliath", {
+    Title = "Enable Auto Goliath",
+    Description = "Star Auto Goliathing your pets.",
+    State = false
+})
+
+-- Auto Goliath Function
+local function AutoGoliath(selectedIDs)
+    if not selectedIDs or #selectedIDs == 0 then
+        warn("No pets selected for Goliath.")
+        return
+    end
+
+    local currentIndex = 1
+
+    while isAutoGoliathRunning do
+        local slotsToFill = math.min(3, #selectedIDs)
+
+        for i = 1, slotsToFill do
+            local petId = selectedIDs[((currentIndex + i - 2) % #selectedIDs) + 1]
+            
+            local purchaseArgs = {
+                [1] = petId,
+                [2] = "Slot" .. i
+            }
+
+            print("Purchasing pet ID:", petId, "into", purchaseArgs[2])
+            PetGoliathService.onPurchase:FireServer(unpack(purchaseArgs))
+        end
+
+        task.wait(CONFIG.SLOT_WAIT_TIME)
+
+        for i = 1, slotsToFill do
+            local claimArgs = {
+                [1] = "PlaceholderString",
+                [2] = "Slot" .. i,
+            }
+
+            print("Claiming Slot:", i)
+            PetGoliathService.onClaim:FireServer(unpack(claimArgs))
+        end
+
+        currentIndex = ((currentIndex + slotsToFill - 1) % #selectedIDs) + 1
+    end
+end
+
+-- Auto Goliath Toggle Handler
+AutoGoliathToggle:OnChanged(function(enabled)
+    if enabled then
+        print("Auto Goliath enabled.")
+        
+        if not selectedPetName then
+            warn("Please select a pet to use for Goliath.")
+            AutoGoliathToggle:Set(false)
+            return
+        end
+
+        local selectedIDs = ownedPetData[selectedPetName]
+        if not selectedIDs or #selectedIDs == 0 then
+            warn("No pet IDs found.")
+            AutoGoliathToggle:Set(false)
+            return
+        end
+
+        isAutoGoliathRunning = true
+        spawn(function()
+            AutoGoliath(selectedIDs)
+        end)
+    else
+        print("Auto Goliath disabled.")
+        isAutoGoliathRunning = false
+    end
+end)
+
+-- Initialize
+fetchPetData()
+startDropdownRefresh()
+periodicPetDataRefresh()
+
+local MutateSection = Tabs.Machines:AddSection("Mutate")
+
+
+-- Services and Variables
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PetServiceRF = ReplicatedStorage.Packages.Knit.Services.PetService.RF:FindFirstChild("getOwned")
+local PetCombineService = ReplicatedStorage.Packages.Knit.Services.PetCombineService.RF
+local PetCureFn = PetCombineService:FindFirstChild("cure")
+local PetMutateFn = PetCombineService:FindFirstChild("mutate")
+
+local ownedPetData = {}  -- Store full pet data including locked status
+local uniquePetNames = {}
+local selectedPetName = nil
+local selectedMutation = nil
+local stopLoop = false
+local hasReportedCompletion = false
+
+local function getMutation(tbl)
+    if not tbl then return nil end
+    for key, value in pairs(tbl) do
+        if type(value) == "string" then
+            if value:match("Rainbow") then return "Rainbow"
+            elseif value:match("Glowing") then return "Glowing"
+            elseif value:match("Ghost") then return "Ghost"
+            elseif value:match("Cosmic") then return "Cosmic"
+            end
+        elseif type(value) == "table" then
+            local result = getMutation(value)
+            if result then return result end
+        end
+    end
+    return nil
+end
+
+local function fetchOwnedPets()
+    ownedPetData = {}
+    uniquePetNames = {}
+
+    if PetServiceRF and PetServiceRF:IsA("RemoteFunction") then
+        local success, petData = pcall(function()
+            return PetServiceRF:InvokeServer()
+        end)
+
+        if success and type(petData) == "table" then
+            for petId, petInfo in pairs(petData) do
+                local displayName = petInfo.DisplayName or "Unknown"
+
+                if not ownedPetData[displayName] then
+                    ownedPetData[displayName] = {}
+                end
+
+                table.insert(ownedPetData[displayName], {
+                    Id = petId,
+                    Locked = petInfo.Locked,
+                    Mutation = getMutation(petInfo) or "No Mutation"
+                })
+            end
+
+            for petName, petInstances in pairs(ownedPetData) do
+                for _, petInfo in ipairs(petInstances) do
+                    if not petInfo.Locked then
+                        if not table.find(uniquePetNames, petName) then
+                            table.insert(uniquePetNames, petName)
+                        end
+                        break
+                    end
+                end
+            end
+            return true
+        else
+            warn("Failed to fetch pet data or received invalid data.")
+        end
+    else
+        warn("PetServiceRF is not a valid RemoteFunction.")
+    end
+    return false
+end
+
+local PetDropdown = Tabs.Machines:AddDropdown("PetDropdown", {
+    Title = "Select Pet",
+    Description = "Choose a specific unlocked pet name to mutate.",
+    Values = uniquePetNames,
+    Multi = false,
+})
+
+local function refreshDropdown()
+    if fetchOwnedPets() then
+        PetDropdown:SetValues(uniquePetNames)
+
+        if selectedPetName and not table.find(uniquePetNames, selectedPetName) then
+            selectedPetName = nil
+            PetDropdown:SetValue(nil)
+        end
+    end
+end
+
+local function startDropdownRefresh()
+    spawn(function()
+        while true do
+            refreshDropdown()
+            wait(5)
+        end
+    end)
+end
+
+PetDropdown:OnChanged(function(value)
+    selectedPetName = value
+    hasReportedCompletion = false
+
+    if selectedPetName then
+        local petInstances = ownedPetData[selectedPetName] or {}
+        print("\nUnlocked Pet IDs for", selectedPetName .. ":")
+        for _, petInfo in ipairs(petInstances) do
+            if not petInfo.Locked then
+                print(petInfo.Id)
+            end
+        end
+    end
+end)
+
+local MutationDropdown = Tabs.Machines:AddDropdown("MutationDropdown", {
+    Title = "Select Mutation",
+    Description = "Choose a mutation to aim for.",
+    Values = { "Glowing", "Rainbow", "Ghost", "Cosmic" },
+    Multi = false,
+})
+
+MutationDropdown:OnChanged(function(value)
+    selectedMutation = value
+    hasReportedCompletion = false
+end)
+
+local KeepGhostToggle = Tabs.Machines:AddToggle("KeepGhostToggle", {
+    Title = "Keep Ghost Pets",
+    Description = "Keep pets if they become Ghost mutation, even if Ghost isn't selected.",
+    Default = false,
+})
+
+local KeepCosmicToggle = Tabs.Machines:AddToggle("KeepCosmicToggle", {
+    Title = "Keep Cosmic Pets",
+    Description = "Keep pets if they become Cosmic mutation, even if Cosmic isn't selected.",
+    Default = false,
+})
+
+local function shouldProcessPet(pet)
+    if KeepGhostToggle.Value and pet.Mutation == "Ghost" then
+        return false
+    end
+    if KeepCosmicToggle.Value and pet.Mutation == "Cosmic" then
+        return false
+    end
+    return pet.Mutation == "No Mutation" or pet.Mutation ~= selectedMutation
+end
+
+local function checkAllPetsMutated()
+    if not selectedPetName or not selectedMutation then return false end
+
+    local petsToProcess = {}
+    for _, petInfo in pairs(ownedPetData[selectedPetName]) do
+        if not petInfo.Locked then
+            table.insert(petsToProcess, petInfo)
+        end
+    end
+
+    for _, pet in pairs(petsToProcess) do
+        if pet.Mutation ~= selectedMutation then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function autoCureThenMutateLoop()
+    stopLoop = false
+    hasReportedCompletion = false
+    while not stopLoop do
+        if not (selectedPetName and selectedMutation) then
+            warn("Please select a pet name and mutation before enabling Auto Mutate.")
+            wait(2)
+            continue
+        end
+
+        if not ownedPetData[selectedPetName] then
+            warn("No data available for the selected pet.")
+            wait(2)
+            continue
+        end
+
+        if checkAllPetsMutated() then
+            if not hasReportedCompletion then
+                print("Finished mutating all selected pets!")
+                hasReportedCompletion = true
+            end
+            wait(1.5)
+            continue
+        end
+
+        local petsToProcess = {}
+        for _, petInfo in pairs(ownedPetData[selectedPetName]) do
+            if not petInfo.Locked and shouldProcessPet(petInfo) then
+                table.insert(petsToProcess, petInfo)
+            end
+        end
+
+        for _, pet in pairs(petsToProcess) do
+            if stopLoop then break end
+
+            if pet.Mutation ~= selectedMutation then
+                if pet.Mutation ~= "No Mutation" and
+                   not (KeepGhostToggle.Value and pet.Mutation == "Ghost") and
+                   not (KeepCosmicToggle.Value and pet.Mutation == "Cosmic") then
+                    if PetCureFn and pet.Id then
+                        local cureArgs = { [1] = pet.Id }
+                        pcall(function()
+                            return PetCureFn:InvokeServer(unpack(cureArgs))
+                        end)
+                    else
+                        warn("Cure function not found or Pet ID is invalid.")
+                    end
+                elseif pet.Mutation == "No Mutation" then
+                    if PetMutateFn and pet.Id then
+                        local mutateArgs = { [1] = pet.Id, [2] = {} }
+                        pcall(function()
+                            return PetMutateFn:InvokeServer(unpack(mutateArgs))
+                        end)
+                    else
+                        warn("Mutate function not found or Pet ID is invalid.")
+                    end
+                end
+                wait(1)
+                fetchOwnedPets()
+            end
+        end
+        wait(1)
+    end
+end
+
+local AutoMutateToggle = Tabs.Machines:AddToggle("AutoMutateToggle", {
+    Title = "Enable Auto Mutate Loop",
+    Description = "Automatically handles curing and mutation loops.",
+    Default = false,
+})
+
+AutoMutateToggle:OnChanged(function(value)
+    if value then
+        autoCureThenMutateLoop()
+    else
+        stopLoop = true
+    end
+end)
+
+Tabs.Machines:AddButton({
+    Title = "Randomly Mutate Pets",
+    Description = "Randomly mutate selected pet IDs without curing them.",
+    Callback = function()
+        if not selectedPetName then
+            warn("Please select a pet name before using the mutation button.")
+            return
+        end
+
+        local petsToMutate = {}
+        for _, petInfo in ipairs(ownedPetData[selectedPetName] or {}) do
+            if not petInfo.Locked then
+                table.insert(petsToMutate, petInfo.Id)
+            end
+        end
+
+        if #petsToMutate == 0 then
+            warn("No unlocked pets available for mutation.")
+            return
+        end
+
+        if PetMutateFn then
+            for _, petId in ipairs(petsToMutate) do
+                local mutateArgs = { [1] = petId, [2] = {} }
+                pcall(function()
+                    PetMutateFn:InvokeServer(unpack(mutateArgs))
+                end)
+            end
+            print("Random mutation applied to selected pets:", petsToMutate)
+            fetchOwnedPets()
+        else
+            warn("Mutate function not found!")
+        end
+    end,
+})
+
+fetchOwnedPets()
+startDropdownRefresh()
+
+
+local SlimeSection = Tabs.Machines:AddSection("Slime")
+
+
+
+
+-- Services and Variables
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PetServiceRF = ReplicatedStorage.Packages.Knit.Services.PetService.RF:FindFirstChild("getOwned")
+
+local ownedPetData = {}
+local uniquePetNames = {}
+local selectedPetName = nil
+local selectedSlimeColors = {}
+local autoSlimeEnabled = false
+local hasReportedCompletion = false
+
+local function fetchOwnedPets()
+    ownedPetData = {}
+    uniquePetNames = {}
+
+    if PetServiceRF and PetServiceRF:IsA("RemoteFunction") then
+        local success, petData = pcall(function()
+            return PetServiceRF:InvokeServer()
+        end)
+
+        if success and type(petData) == "table" then
+            for petId, petInfo in pairs(petData) do
+                if not petInfo.Locked then
+                    local displayName = petInfo.DisplayName or "Unknown"
+
+                    if not ownedPetData[displayName] then
+                        ownedPetData[displayName] = {}
+                    end
+
+                    table.insert(ownedPetData[displayName], {
+                        Id = petId,
+                        Name = displayName,
+                        Slime = petInfo.Slime or "None"
+                    })
+                end
+            end
+
+            for petName in pairs(ownedPetData) do
+                table.insert(uniquePetNames, petName)
+            end
+
+            table.sort(uniquePetNames)
+            return true
+        end
+    end
+    return false
+end
+
+local function slimifyPet(petId)
+    local args = {[1] = petId}
+    return game:GetService("ReplicatedStorage").Packages.Knit.Services.PetService.RF.slimify:InvokeServer(unpack(args))
+end
+
+local function deslimePet(petId)
+    local args = {[1] = petId}
+    game:GetService("ReplicatedStorage").Packages.Knit.Services.PetDeslimeService.RE.onPurchase:FireServer(unpack(args))
+    wait(63)
+    game:GetService("ReplicatedStorage").Packages.Knit.Services.PetDeslimeService.RE.onClaim:FireServer()
+end
+
+local function checkAllPetsSlimed()
+    if not selectedPetName or #selectedSlimeColors == 0 then return false end
+    
+    local petsToProcess = ownedPetData[selectedPetName] or {}
+    for _, petInfo in ipairs(petsToProcess) do
+        if not table.find(selectedSlimeColors, petInfo.Slime) then
+            return false
+        end
+    end
+    return true
+end
+
+local function processAutoSlime()
+    spawn(function()
+        while autoSlimeEnabled do
+            if selectedPetName and #selectedSlimeColors > 0 then
+                if checkAllPetsSlimed() then
+                    if not hasReportedCompletion then
+                        print("\nAll selected pets have desired slime colors!")
+                        hasReportedCompletion = true
+                    end
+                    wait(1)
+                    continue
+                end
+
+                hasReportedCompletion = false
+                local petInstances = ownedPetData[selectedPetName] or {}
+                
+                -- First pass: Handle pets with no slime
+                for _, petInfo in ipairs(petInstances) do
+                    if not autoSlimeEnabled then break end
+                    
+                    if petInfo.Slime == "None" then
+                        print("Slimifying pet:", petInfo.Id)
+                        slimifyPet(petInfo.Id)
+                        wait(1)
+                        fetchOwnedPets()
+                    end
+                end
+                
+                -- Second pass: Handle wrong slime colors
+                for _, petInfo in ipairs(petInstances) do
+                    if not autoSlimeEnabled then break end
+                    
+                    if petInfo.Slime ~= "None" and not table.find(selectedSlimeColors, petInfo.Slime) then
+                        print("Processing wrong slime color:", petInfo.Id)
+                        deslimePet(petInfo.Id)
+                        wait(1)
+                        slimifyPet(petInfo.Id)
+                        wait(1)
+                        fetchOwnedPets()
+                    end
+                end
+            end
+            wait(1)
+        end
+    end)
+end
+
+local PetDropdown = Tabs.Machines:AddDropdown("PetDropdown", {
+    Title = "Select a pet name to Slime",
+    Description = "This will slime all unlocked pets that have this name",
+    Values = uniquePetNames,
+    Multi = false,
+})
+
+local SlimeDropdown = Tabs.Machines:AddDropdown("SlimeColors", {
+    Title = "Select Slime",
+    Description = "Choose slimes to keep",
+    Values = {"Yellow", "Blue", "Purple", "Red", "Black", "Green"},
+    Multi = true,
+    Default = {}
+})
+
+local AutoSlimeToggle = Tabs.Machines:AddToggle("AutoSlimeToggle", {
+    Title = "Auto Slime",
+    Description = "Automatically slime pets",
+    Default = false
+})
+
+local RandomSlimeButton = Tabs.Machines:AddButton({
+    Title = "Random Slime All Pets",
+    Description = "Slimify all unlocked pets that have no slime (won't deslime existing)",
+    Callback = function()
+        if PetServiceRF then
+            local success, petData = pcall(function()
+                return PetServiceRF:InvokeServer()
+            end)
+            
+            if success and petData then
+                local unslimed = {}
+                
+                -- Collect all unslimed pets
+                for petId, petInfo in pairs(petData) do
+                    if not petInfo.Locked and (petInfo.Slime == "None" or not petInfo.Slime) then
+                        table.insert(unslimed, petId)
+                    end
+                end
+                
+                -- Process unslimed pets
+                if #unslimed > 0 then
+                    print(string.format("\nSlimifying %d pets...", #unslimed))
+                    
+                    for i, petId in ipairs(unslimed) do
+                        print(string.format("Slimifying pet %d/%d (ID: %s)", i, #unslimed, tostring(petId)))
+                        
+                        local args = {[1] = petId}
+                        game:GetService("ReplicatedStorage").Packages.Knit.Services.PetService.RF.slimify:InvokeServer(unpack(args))
+                        
+                        wait(1)
+                    end
+                    
+                    print("Finished slimifying all unslimed pets!")
+                else
+                    print("No unslimed pets found!")
+                end
+            end
+        end
+    end
+})
+
+PetDropdown:OnChanged(function(value)
+    selectedPetName = value
+    if selectedPetName then
+        local petInstances = ownedPetData[selectedPetName] or {}
+        print("\n=== Pet Details for: " .. selectedPetName .. " ===")
+        print(string.format("%-36s | %-20s | %s", "ID", "Name", "Slime"))
+        print(string.rep("-", 80))
+        for _, petInfo in ipairs(petInstances) do
+            print(string.format("%-36s | %-20s | %s", 
+                tostring(petInfo.Id),
+                petInfo.Name,
+                tostring(petInfo.Slime)
+            ))
+        end
+        print(string.rep("-", 80))
+    end
+end)
+
+SlimeDropdown:OnChanged(function(value)
+    selectedSlimeColors = {}
+    for color, isSelected in pairs(value) do
+        if isSelected then
+            table.insert(selectedSlimeColors, color)
+        end
+    end
+    if #selectedSlimeColors > 0 then
+        print("Selected Slimes:", table.concat(selectedSlimeColors, ", "))
+    end
+end)
+
+AutoSlimeToggle:OnChanged(function(value)
+    autoSlimeEnabled = value
+    hasReportedCompletion = false
+    if value then
+        processAutoSlime()
+    end
+end)
+
+spawn(function()
+    while wait(5) do
+        if fetchOwnedPets() then
+            PetDropdown:SetValues(uniquePetNames)
+        end
+    end
+end)
+
+fetchOwnedPets()
+
+
+local NinjaSection = Tabs.Machines:AddSection("Ninja Event")
+
+
+local AutoPlaytimeToggle = PlaytimeSection:AddToggle("AutoPlaytime", {
+    Title = "Auto Claim Playtime Pass",
+    Default = false
+})
+
+AutoPlaytimeToggle:OnChanged(function()
+    if AutoPlaytimeToggle.Value then
+        -- Claim rewards immediately when enabled
+        for i = 1, 12 do
+            local args = {
+                [1] = "Free",
+                [2] = i
+            }
+            game:GetService("ReplicatedStorage").Packages.Knit.Services.EventPassService.RF.ClaimReward:InvokeServer(unpack(args))
+        end
+        
+        -- Start reset/claim loop
+        spawn(function()
+            while AutoPlaytimeToggle.Value do
+                wait(60) -- Wait before reset
+                
+                -- Reset pass
+                game:GetService("ReplicatedStorage").Packages.Knit.Services.EventPassService.RF.Reset:InvokeServer()
+                
+                -- Claim all rewards after reset
+                for i = 1, 12 do
+                    local args = {
+                        [1] = "Free",
+                        [2] = i
+                    }
+                    game:GetService("ReplicatedStorage").Packages.Knit.Services.EventPassService.RF.ClaimReward:InvokeServer(unpack(args))
+                end
+            end
+        end)
+    end
+end)
+
+
+local function GetCurrentZone()
+    local player = game.Players.LocalPlayer
+    return player:GetAttribute("ZoneBlossomVillage") == true and "BlossomVillage" or "NinjaSchool"
+end
+
+
+
+local function GetBestPrisonBag()
+    local player = game.Players.LocalPlayer
+    local currentZone = GetCurrentZone()
+    local prisonKnuckle = player:GetAttribute(currentZone == "BlossomVillage" and "TotalBlossomKnuckles" or "TotalNinjaKnuckles") or 0
+    local punchBagData = require(game:GetService("ReplicatedStorage").Data.PunchBags)
+    
+    if player:GetAttribute("VIP") == true then
+        return "VIP"
+    end
+    
+    local bestTier = "Tier1"
+    local highestRequired = 0
+    
+    if punchBagData and punchBagData[currentZone] then
+        for tier, data in pairs(punchBagData[currentZone]) do
+            if data.StrengthRequired and 
+               prisonKnuckle >= data.StrengthRequired and 
+               data.StrengthRequired > highestRequired then
+                bestTier = tier
+                highestRequired = data.StrengthRequired
+            end
+        end
+    end
+    
+    return bestTier
+end
+
+local function GetBestPrisonEquipment()
+    local player = game.Players.LocalPlayer
+    local currentZone = GetCurrentZone()
+    local prisonBicep = player:GetAttribute(currentZone == "BlossomVillage" and "TotalBlossomBicep" or "TotalNinjaBicep") or 0
+    local dumbbellData = require(game:GetService("ReplicatedStorage").Data.Dumbells)
+    local bestDumbell = currentZone == "NinjaSchool" and "Ninja1" or "Blossom1"
+    local highestRequired = 0
+    
+    if dumbbellData and dumbbellData[currentZone] then
+        for name, data in pairs(dumbbellData[currentZone]) do
+            if data.StrengthRequired and 
+               prisonBicep >= data.StrengthRequired and 
+               data.StrengthRequired > highestRequired then
+                bestDumbell = name
+                highestRequired = data.StrengthRequired
+            end
+        end
+    end
+
+    return bestDumbell
+end
+
+local function trainChi()
+    game:GetService("ReplicatedStorage").Packages.Knit.Services.ChiService.RF.SetChi:InvokeServer()
+end
+
+
+-- Add Training Section
+local TrainSection = Tabs.Main:AddSection("Auto Train")
+
+local TrainingDropdown = Tabs.Main:AddDropdown("TrainingSelect", {
+    Title = "Select Training Type",
+    Values = {"Dumbells", "PunchBags", "Chi Zones"},
+    Multi = false,
+    Default = "Dumbells"
+})
+
+local AutoTrainToggle = Tabs.Main:AddToggle("AutoTrain", {
+    Title = "Auto Train",
+    Default = false
+})
+
+-- Create button after function exists
+local TrainChiButton = Tabs.Main:AddButton({
+    Title = "Train Chi",
+    Description = "Trains Chi (Outside of Zones)",
+    Callback = function()
+        trainChi()
+    end
+})
+
+
+
+local function getBestChiZone()
+    local player = game.Players.LocalPlayer
+    local chiLevel = player:GetAttribute("TotalNinjaChi") or 0
+    
+    -- Chi zone requirements and direct CFrames
+    local chiZones = {
+        {req = 2000, cf = CFrame.new(-2262.39429, 62.2289581, 6049.82715)},
+        {req = 25000, cf = CFrame.new(-2140.29126, 62.2289581, 6114.97607)},
+        {req = 250000, cf = CFrame.new(-2133.35864, 31.6659641, 7659.94141)},
+        {req = 1000000, cf = CFrame.new(-2081.46436, 127.705963, 7722.24707)}             
+    }
+    
+    local bestZone = nil
+    for _, zone in ipairs(chiZones) do
+        if chiLevel >= zone.req then
+            bestZone = zone
+        else
+            break -- Stop checking once we find a zone that the player cannot access
+        end
+    end
+    
+    return bestZone
+end
+
+
+
+
+-- Update AutoTrainToggle handler
+AutoTrainToggle:OnChanged(function()
+    if AutoTrainToggle.Value then
+        -- Start appropriate training loop based on selected type
+        spawn(function()
+            if TrainingDropdown.Value == "Dumbells" then
+                -- Initial equipment
+                local currentZone = GetCurrentZone()
+                local equipment = GetBestPrisonEquipment()
+                local args = {
+                    [1] = currentZone,
+                    [2] = "Dumbells", 
+                    [3] = equipment
+                }
+                game:GetService("ReplicatedStorage").Packages.Knit.Services.ToolService.RE.onGuiEquipRequest:FireServer(unpack(args))
+                
+                -- Re-equip and click loop
+                spawn(function()
+                    while AutoTrainToggle.Value do
+                        -- Click
+                        game:GetService("ReplicatedStorage").Packages.Knit.Services.ToolService.RE.onClick:FireServer()
+                        wait(0.25)
+                        
+                        -- Re-equip every 6 seconds
+                        local timeElapsed = 0
+                        while timeElapsed < 6 and AutoTrainToggle.Value do
+                            wait(0.25)
+                            timeElapsed = timeElapsed + 0.25
+                            game:GetService("ReplicatedStorage").Packages.Knit.Services.ToolService.RE.onClick:FireServer()
+                        end
+                        
+                        if AutoTrainToggle.Value then
+                            local currentZone = GetCurrentZone()
+                            local equipment = GetBestPrisonEquipment()
+                            local args = {
+                                [1] = currentZone,
+                                [2] = "Dumbells",
+                                [3] = equipment
+                            }
+                            game:GetService("ReplicatedStorage").Packages.Knit.Services.ToolService.RE.onGuiEquipRequest:FireServer(unpack(args))
+                        end
+                    end
+                end)
+                
+            elseif TrainingDropdown.Value == "Chi Zones" then
+                spawn(function()
+                    while AutoTrainToggle.Value and TrainingDropdown.Value == "Chi Zones" do
+                        -- Get best zone and teleport
+                        local bestZone = getBestChiZone()
+                        if bestZone then
+                            game.Players.LocalPlayer.Character:PivotTo(bestZone.cf)
+                        end
+                        
+                        -- Train chi
+                        trainChi()
+                        
+                        -- Wait 10 seconds between trains
+                        local timeElapsed = 0
+                        while timeElapsed < 3 and AutoTrainToggle.Value and TrainingDropdown.Value == "Chi Zones" do
+                            wait(1)
+                            timeElapsed = timeElapsed + 1
+                        end
+                        
+                        -- Break if toggle off or training changed
+                        if not AutoTrainToggle.Value or TrainingDropdown.Value ~= "Chi Zones" then break end
+                    end
+                end)
+                
+            else -- PunchBags
+                spawn(function() 
+                    while AutoTrainToggle.Value do
+                        local currentZone = GetCurrentZone()
+                        local tier = GetBestPrisonBag()
+                        local bag = workspace.Zones[currentZone].Interactables.Training.PunchBags[tier]
+                        
+                        if bag then
+                            local bagCFrame = bag:GetPivot()
+                            game.Players.LocalPlayer.Character:PivotTo(bagCFrame * CFrame.new(0, 0, -3))
+                            
+                            local args = {
+                                [1] = currentZone,
+                                [2] = tier,
+                                [3] = game.Players.LocalPlayer:GetAttribute("VIP") == true
+                            }
+                            game:GetService("ReplicatedStorage").Packages.Knit.Services.PunchBagService.RE.onGiveStats:FireServer(unpack(args))
+                        end
+                        wait(0.25)
+                    end
+                end)
+            end
+        end)
+    end
+end)
+
+
+-- Connect attribute change listeners
+local player = game.Players.LocalPlayer
+player:GetAttributeChangedSignal("ZoneBlossomVillage"):Connect(onAttributeChanged)
+player:GetAttributeChangedSignal("TotalNinjaChi"):Connect(onAttributeChanged)
+player:GetAttributeChangedSignal("TotalNinjaBicep"):Connect(onAttributeChanged)
+player:GetAttributeChangedSignal("TotalNinjaKnuckles"):Connect(onAttributeChanged)
+player:GetAttributeChangedSignal("TotalBlossomBicep"):Connect(onAttributeChanged)
+player:GetAttributeChangedSignal("TotalBlossomKnuckles"):Connect(onAttributeChanged)
+
+
+-- Auto Fight Section
+local FightSection = Tabs.Main:AddSection("Auto Fight")
+
+local npcLocations = {
+    {path = workspace.GameObjects.ArmWrestling.NinjaSchool.NPC, zone = "NinjaSchool"},
+    {path = workspace.GameObjects.ArmWrestling.BlossomVillage.NPC, zone = "BlossomVillage"}
+}
+
+local modelNames = {}
+local models = {}
+local npcZones = {} -- Store which zone each NPC belongs to
+
+-- Gather NPCs from all locations
+for _, location in pairs(npcLocations) do
+    for _, npc in pairs(location.path:GetChildren()) do
+        if npc:IsA("Model") then
+            table.insert(models, npc)
+            table.insert(modelNames, npc.Name)
+            npcZones[npc.Name] = location.zone
+        end
+    end
+end
+
+table.sort(modelNames)
+
+local modelDropdown = Tabs.Main:AddDropdown("ModelDropdown", {
+    Title = "Select Boss",
+    Values = modelNames,
+    Multi = false,
+    Default = modelNames[1]
+})
+
+local AutoFightToggle = Tabs.Main:AddToggle("AutoFight", {
+    Title = "Auto Fight",
+    Default = false
+})
+
+AutoFightToggle:OnChanged(function()
+    if AutoFightToggle.Value then
+        spawn(function()
+            while true do
+                if not AutoFightToggle.Value then break end
+                local selectedNPC = modelDropdown.Value
+                if selectedNPC then
+                    -- Find the correct path based on the zone
+                    local zone = npcZones[selectedNPC]
+                    local npcPath
+                    if zone == "NinjaSchool" then
+                        npcPath = workspace.GameObjects.ArmWrestling.NinjaSchool.NPC
+                    else
+                        npcPath = workspace.GameObjects.ArmWrestling.BlossomVillage.NPC
+                    end
+                    
+                    local npcModel = npcPath:FindFirstChild(selectedNPC)
+                    if npcModel and npcModel:FindFirstChild("Table") then
+                        local args = {
+                            [1] = selectedNPC,
+                            [2] = npcModel.Table,
+                            [3] = zone
+                        }
+                        game:GetService("ReplicatedStorage").Packages.Knit.Services.ArmWrestleService.RE.onEnterNPCTable:FireServer(unpack(args))
+                    end
+                end
+                wait(1)
+            end
+        end)
+    end
+end)
+
+local AutoClickToggle = Tabs.Main:AddToggle("AutoClick", {
+    Title = "Auto Click", 
+    Default = false 
+})
+
+AutoClickToggle:OnChanged(function()
+    if AutoClickToggle.Value then
+        spawn(function()
+            while true do
+                if not AutoClickToggle.Value then break end
+                game:GetService("ReplicatedStorage").Packages.Knit.Services.ArmWrestleService.RE.onClickRequest:FireServer()
+                wait(0.1)
+            end
+        end)
+    end
+end)
+
+
+local NPCSection = Tabs.Main:AddSection("Auto NPC Farm")
+local npcPath = workspace.GameObjects.RngNPCs.BlossomVillage.Npc
+local isAutoFarming = false
+
+local function updateProximityPrompts(folder)
+    for _, descendant in ipairs(folder:GetDescendants()) do
+        if descendant:IsA("ProximityPrompt") then
+            descendant.HoldDuration = 0
+            descendant.Style = Enum.ProximityPromptStyle.Default
+            descendant.MaxActivationDistance = 1000000000000
+            -- Directly trigger the proximity prompt
+            fireproximityprompt(descendant)
+        end
+    end
+end
+
+local AutoBeatNPCToggle = Tabs.Main:AddToggle("AutoBeatNPC", {
+    Title = "Auto Beat NPC",
+    Description = "Auto Fight Blossom Village NPCs",
+    Default = false
+})
+
+AutoBeatNPCToggle:OnChanged(function()
+    isAutoFarming = AutoBeatNPCToggle.Value
+    
+    if isAutoFarming then
+        -- Start proximity prompt updates
+        spawn(function()
+            while true do
+                if not AutoBeatNPCToggle.Value then break end
+                updateProximityPrompts(npcPath)
+                wait(1)
+            end
+        end)
+    else
+        -- Reset proximity prompt distance when toggle is turned off
+        for _, descendant in ipairs(npcPath:GetDescendants()) do
+            if descendant:IsA("ProximityPrompt") then
+                descendant.MaxActivationDistance = 6
+            end
+        end
+    end
+end)
+
+-- Eggs Section
+local EggSection = Tabs.Main:AddSection("Eggs")
+
+-- Hatch Amount Dropdown
+local HatchAmountDropdown = Tabs.Main:AddDropdown("HatchAmount", {
+    Title = "Hatch Amount",
+    Values = {"1x", "3x", "8x", "30x", "Max"},
+    Multi = false,
+    Default = "1x"
+})
+
+-- Egg Selection Dropdown
+local EggDropdown = Tabs.Main:AddDropdown("EggSelect", {
+    Title = "Select Egg",
+    Values = {"Ninja", "Sensei", "Blossom", "Samurai"},
+    Multi = false,
+    Default = "Ninja"
+})
+
+-- Auto Hatch Toggle
+local AutoHatchToggle = Tabs.Main:AddToggle("AutoHatch", {
+    Title = "Auto Hatch",
+    Default = false
+})
+
+AutoHatchToggle:OnChanged(function()
+    if AutoHatchToggle.Value then
+        spawn(function()
+            while true do
+                if not AutoHatchToggle.Value then break end
+                
+                local args = {}
+                local selectedEgg = EggDropdown.Value
+                local hatchMultiplier = HatchAmountDropdown.Value
+                
+                if hatchMultiplier == "1x" then
+                    args = {selectedEgg, nil, false, true, false}
+                elseif hatchMultiplier == "3x" then
+                    args = {selectedEgg, nil, true, false}
+                elseif hatchMultiplier == "8x" then
+                    args = {selectedEgg, nil, false, true, true}
+                elseif hatchMultiplier == "30x" then
+                    args = {selectedEgg, nil, nil, false, nil, true}
+                elseif hatchMultiplier == "Max" then
+                    args = {selectedEgg, nil, nil, false, nil, true}
+                end
+                
+                game:GetService("ReplicatedStorage").Packages.Knit.Services.EggService.RF.purchaseEgg:InvokeServer(unpack(args))
+                wait(0.001)
+            end
+        end)
+    end
+end)
+
+
+local MerchantSection = Tabs.Main:AddSection("Merchant")
+
+local BlackMarketDropdown = Tabs.Main:AddDropdown("BlackMarketDropdown", {
+    Title = "Select Merchant Slot(s)",
+    Values = {1, 2, 3, 4, 5},
+    Multi = true,
+    Default = {}
+})
+
+local AutoBuyToggle = Tabs.Main:AddToggle("AutoBuyToggle", {
+    Title = "Auto Buy (Selected Slots)",
+    Default = false
+})
+
+AutoBuyToggle:OnChanged(function()
+    if AutoBuyToggle.Value then
+        spawn(function()
+            while true do
+                if not AutoBuyToggle.Value then break end
+                -- Buy 3 times
+                for i = 1, 3 do
+                    for number, isSelected in pairs(BlackMarketDropdown.Value) do
+                        if isSelected then
+                            local args = {
+                                [1] = "Blossom Merchant",
+                                [2] = number
+                            }
+                            game:GetService("ReplicatedStorage").Packages.Knit.Services.LimitedMerchantService.RF.BuyItem:InvokeServer(unpack(args))
+                            wait(1)
+                        end
+                    end
+                end
+                wait(30) -- Wait 30 seconds before next cycle
+            end
+        end)
+    end
+end)
+
+
+
+-- Belt Section
+local BeltSection = Tabs.Main:AddSection("Auto Buy Belts")
+
+-- Toggle for Auto Buy
+local AutoBuyBeltsToggle = Tabs.Main:AddToggle("AutoBuyBelts", {
+    Title = "Buy Belts",
+    Description = "WARNING: It will keep buying the best belts for you, until you run out of Ninja Yen, or until you turn the toggle off.",
+    Default = false
+})
+
+-- Static belt prices table
+local beltPrices = {
+    ["White"] = 0,
+    ["Yellow"] = 500,
+    ["Orange"] = 1250,
+    ["Green"] = 5000,
+    ["Blue"] = 12500,
+    ["Purple"] = 25000,
+    ["Brown"] = 50000,
+    ["Red"] = 100000,
+    ["Black"] = 250000,
+    ["Ember"] = 500000,
+    ["Storm"] = 1000000,
+    ["Wind"] = 2500000,
+    ["Nightfall"] = 5000000,
+    ["Flare"] = 10000000,
+    ["Rift"] = 25000000,
+    ["Ironclad"] = 50000000,
+    ["Chaos"] = 100000000,
+    ["Vortex"] = 250000000,
+    ["Nova"] = 350000000,
+    ["Eternal"] = 500000000,
+    ["Dragon"] = 1000000000
+}
+
+-- Create sorted belt order
+local beltOrder = {}
+for belt, price in pairs(beltPrices) do
+    table.insert(beltOrder, {name = belt, price = price})
+end
+table.sort(beltOrder, function(a, b) return a.price < b.price end)
+
+-- Function to find next belt in progression
+local function findNextBelt(currentBelt)
+    local currentPrice = beltPrices[currentBelt]
+    
+    for i, beltData in ipairs(beltOrder) do
+        if beltData.price > currentPrice then
+            return beltData.name, beltData.price
+        end
+    end
+    return nil, nil
+end
+
+AutoBuyBeltsToggle:OnChanged(function()
+    if AutoBuyBeltsToggle.Value then
+        spawn(function()
+            while true do
+                if not AutoBuyBeltsToggle.Value then break end
+                
+                local player = game.Players.LocalPlayer
+                local ninjaYen = player:GetAttribute("NinjaYen")
+                local equippedBelt = player:GetAttribute("EquippedNinjaBelt")
+       
+                
+                if ninjaYen and equippedBelt then
+                    -- Keep trying to buy next belts while we have enough yen
+                    local currentBelt = equippedBelt
+                    while true do
+                        local nextBelt, nextPrice = findNextBelt(currentBelt)
+                        
+                        if not nextBelt then
+                            break
+                        end
+                        
+                        
+                        if ninjaYen >= nextPrice then
+                            local args = {
+                                [1] = nextBelt
+                            }
+                            local success = game:GetService("ReplicatedStorage").Packages.Knit.Services.BeltService.RF.ClickedBuyButton:InvokeServer(unpack(args))
+                            
+                            if success then
+                                currentBelt = nextBelt
+                                wait(2) -- 2 second delay between purchases
+                            else
+                                break
+                            end
+                        else
+                            break
+                        end
+                    end
+                end
+                
+                wait(2)
+            end
+        end)
+    end
+end)
+
+
+local ChestSection = Tabs.Main:AddSection("Ninja Chest")
+
+
+-- Auto Claim Santa Sleigh Gift toggle
+local AutoClaimToggle = Tabs.Main:AddToggle("AutoClaimSantaSleigh", { 
+    Title = "Auto Claim Ninja Chest", 
+    Default = false 
+})
+
+AutoClaimToggle:OnChanged(function()
+    if AutoClaimToggle.Value then
+        while AutoClaimToggle.Value do
+            local args = {
+                [1] = "NinjaChest"
+            }
+            game:GetService("ReplicatedStorage").Packages.Knit.Services.FreeGiftService.RF.Claim:InvokeServer(unpack(args))
+            wait(30)
+        end
+    end
+end)
+       
+
+local TowerSection = Tabs.Main:AddSection("Towers")
+
+-- Prison Cave Buttons
+TowerSection:AddButton({
+    Title = "Use Ninja Tower Key (1x)",
+    Description = "Use the Ninja Tower Key once.",
+    Callback = function()
+        local args = {
+            [1] = "NinjaTower",
+            [2] = false
+        }
+        game:GetService("ReplicatedStorage").Packages.Knit.Services.TowerService.RF.EnterTower:InvokeServer(unpack(args))
+    end
+})
+
+TowerSection:AddButton({
+    Title = "Use All Ninja Tower Keys (250x)",
+    Description = "Use All Ninja Tower Keys (max 250 at a time).",
+    Callback = function()
+        local args = {
+            [1] = "NinjaTower",
+            [2] = true
+        }
+        game:GetService("ReplicatedStorage").Packages.Knit.Services.TowerService.RF.EnterTower:InvokeServer(unpack(args))
+    end
+})
+
+
+
+-- Hidden Roulette Section
+local HiddenSection = Tabs.Main:AddSection("Ninja Fortnue Wheel")
+
+local HiddenSpinDropdown = Tabs.Main:AddDropdown("HiddenSpinAmount", {
+    Title = "Ninja Fortune Spin Amount",
+    Description = "Select Wheel Spin Amount",
+    Values = {"1x", "3x", "10x"},
+    Multi = false,
+    Default = "1x"
+})
+
+local AutoHiddenToggle = Tabs.Main:AddToggle("AutoHiddenSpin", {
+    Title = "Auto Ninja Fortune Wheel",
+    Default = false
+})
+
+AutoHiddenToggle:OnChanged(function()
+    if AutoHiddenToggle.Value then
+        spawn(function()
+            while true do
+                if not AutoHiddenToggle.Value then break end
+                
+                local args = {
+                    [1] = "Ninja Fortune",
+                    [2] = HiddenSpinDropdown.Value == "3x" and "x10" or HiddenSpinDropdown.Value == "10x" and "x25" or nil
+                }
+                game:GetService("ReplicatedStorage").Packages.Knit.Services.SpinnerService.RF.Spin:InvokeServer(unpack(args))
+                
+                wait(1)
+            end
+        end)
+    end
+end)
+
+
